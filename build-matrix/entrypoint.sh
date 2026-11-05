@@ -37,73 +37,66 @@ if [ ! -d "$VOULAGE_PATH/stage/$BUILD_STAGE" ]; then
 fi
 
 includes=()
-error_msg=""
-STAGE_MODEL_PACKAGE_REF="n/a"
+skip_reason=""
 
-process_model() {
-  process_level="$1"
-  model_file="$2"
+# The package's entry in the effective model of one target, as JSON, or
+# nothing if the effective model doesn't list the package.
+#
+# The effective model is merged the way voulage merges it for a build
+# (merge_models in voulage's .github/scripts/main.sh): the root, stage,
+# distro, codename and architecture models, each optional, merged in that
+# order with jq's recursive `*`. So a level inherits what it doesn't
+# override, a source-only override keeps the inherited ref, and a lower
+# level can enable a package that a higher level set to null.
+effective_package() {
+  local distro="$1"
+  local codename="$2"
+  local arch="$3"
+  local models=()
+  local model
 
-  error_msg=""
-
-  if [ -z "$process_level" ]; then
-    error_msg="process level is empty (e.g. package, distro)"
-    return 1
-  fi
-  if [ -z "$model_file" ]; then
-    error_msg="model file is empty"
-    return 1
-  fi
-
-  if [ ! -f "$model_file" ]; then
-    error_msg="model file cannot be found"
-    return 1
-  fi
-
-  packages=$(jq -r '.packages' "$model_file")
-  has_package=$(echo "$packages" | jq 'has("'"${PACKAGE_NAME}"'")')
-
-  # Package is listed in package-model.json file.
-  #
-  # This could mean either of:
-  #  - the package ref gets overridden
-  #  - the package should be completely skipped
-  if [ "$has_package" == "true" ]; then
-    package=$(echo "$packages" | jq -r '.["'"${PACKAGE_NAME}"'"]')
-
-    # Package is explictly set to null. Ignore it.
-    if [ "$package" == "null" ]; then
-      error_msg="Skipped (model is explicitly set to null)"
-      return 1
-    else
-      ref=$(echo "$package" | jq -r '.ref')
-
-      if [ "$process_level" == "stage" ]; then
-        STAGE_MODEL_PACKAGE_REF="$ref"
-      fi
-
-      # Package ref is different that the ref we are executing this on.
-      # Note: this is only needed on distro level.
-      if [ "$process_level" == "distro" ]; then
-        if [ "$ref" != "$PACKAGE_REF" ]; then
-          error_msg="Ignored (request ref: $PACKAGE_REF, model ref: $ref)"
-          return 1
-        fi
-      fi
+  for model in \
+    "stage/package-model.json" \
+    "stage/$BUILD_STAGE/package-model.json" \
+    "stage/$BUILD_STAGE/$distro/package-model.json" \
+    "stage/$BUILD_STAGE/$distro/$codename/package-model.json" \
+    "stage/$BUILD_STAGE/$distro/$codename/$arch/package-model.json"; do
+    if [ -f "$model" ]; then
+      models+=("$model")
     fi
-  else
-    if [ "$process_level" == "stage" ]; then
-      # Don't 'return 1' here!
-      echo "  - package not found in stage model (it might exist in distro level)"
-      echo ""
-    else
-      # Distro doesn't explicitly override the root model. We just need
-      # to make sure the root model's ref is the same as requested ref.
-      if [ "$STAGE_MODEL_PACKAGE_REF" != "$PACKAGE_REF" ]; then
-        error_msg="Ignored (request ref: $PACKAGE_REF, model ref: $STAGE_MODEL_PACKAGE_REF)"
-        return 1
-      fi
-    fi
+  done
+
+  if [ "${#models[@]}" -eq 0 ]; then
+    return
+  fi
+
+  jq -s -c --arg name "$PACKAGE_NAME" '
+    reduce .[] as $model ({}; . * $model)
+    | (.packages // {})
+    | if has($name) then .[$name] else empty end
+  ' "${models[@]}"
+}
+
+# Whether the package is built for one target at the requested ref. Sets
+# skip_reason when it isn't.
+builds_package() {
+  local package
+  local ref
+
+  package=$(effective_package "$1" "$2" "$3")
+  if [ -z "$package" ]; then
+    skip_reason="Skipped (package is not in the model)"
+    return 1
+  fi
+  if [ "$package" == "null" ]; then
+    skip_reason="Skipped (model is explicitly set to null)"
+    return 1
+  fi
+
+  ref=$(echo "$package" | jq -r '.ref')
+  if [ "$ref" != "$PACKAGE_REF" ]; then
+    skip_reason="Ignored (request ref: $PACKAGE_REF, model ref: $ref)"
+    return 1
   fi
 
   return 0
@@ -114,32 +107,25 @@ main() {
 
   pushd "$VOULAGE_PATH" >/dev/null || exit 1
 
-  if [ "$MATRIX_TYPE" == "package" ]; then
-    if ! process_model "stage" "stage/$BUILD_STAGE/package-model.json"; then
-      echo "  - $error_msg"
-      return
-    fi
-  fi
-
   for dir in stage/"$BUILD_STAGE"/*/*/; do
+    if [ ! -d "$dir" ]; then
+      continue
+    fi
+
     distro=$(echo "$dir" | cut -d/ -f3)
     codename=$(echo "$dir" | cut -d/ -f4)
 
-    # Skip for this distro/codename pair.
-    #
-    # Possible reasons:
-    #  - it is explictly set to "null" in package-model
-    #  - it points to some other "ref" in package model
-    if [ "$MATRIX_TYPE" == "package" ]; then
-      if ! process_model "distro" "stage/$BUILD_STAGE/$distro/$codename/package-model.json"; then
-        echo "  - $distro/$codename: $error_msg"
-        continue
-      fi
-    fi
-
-    echo "  - $distro/$codename: OK"
-
     for arch in $BUILD_ARCH; do
+      # Skip this target when its effective model sets the package to
+      # null, doesn't list it, or builds another ref.
+      if [ "$MATRIX_TYPE" == "package" ]; then
+        if ! builds_package "$distro" "$codename" "$arch"; then
+          echo "  - $distro/$codename/$arch: $skip_reason"
+          continue
+        fi
+      fi
+
+      echo "  - $distro/$codename/$arch: OK"
       includes+=("$(jq -n -c --arg distro "$distro" --arg codename "$codename" --arg arch "$arch" '$ARGS.named')")
     done
   done
