@@ -57,6 +57,7 @@ generate_tag_name() {
     "i3status-rs:::ubuntu/v0.22.0")               full_version+="-ubuntu-jammy" ;;
     "i3status-rs:::ubuntu/v0.32.1")               ;;
     "i3status-rs:::ubuntu/v0.34.0")               ;;
+    "i3status-rs:::ubuntu/v0.40.0")               ;;
     "picom:::debian-v9")                          ;;
     "regolith-rofi-config:::i3cp")                ;;
     "sway-regolith:::packaging/v1.7-regolith")    full_version+="-ubuntu-jammy" ;;

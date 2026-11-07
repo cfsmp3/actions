@@ -239,6 +239,9 @@ expect_new_release "regolith-51" "regolith-control-center" "regolith/51" "1.51.0
 expect_new_release "sway-v1.11" "sway-regolith" "packaging/v1.11-regolith" "1.11-2" \
   "v1.11-2"
 
+expect_new_release "i3status-rs-v0.40" "i3status-rs" "ubuntu/v0.40.0" "0.40.0-1" \
+  "v0.40.0-1"
+
 # a ref without a rule is refused before anything else happens
 setup_case "unknown-ref" "fixture-pkg" "regolith/99" "1.99.0-1"
 run_entrypoint "fixture-pkg" "regolith/99"
