@@ -6,6 +6,11 @@
 # sshd drops connections it cannot take yet ("kex_exchange_identification:
 # Connection closed by remote host"). Such failures are retried with a growing,
 # randomized delay; any other rsync error fails right away.
+#
+# The legs also upload into the same new run-<id> folder at the same time. The
+# folder is made with "mkdir -p" on the server, in rsync's own connection, so
+# legs racing to make it don't fail: rsync --mkpath failed with "mkdir ...
+# failed: File exists" (exit code 11) when another leg made it first.
 
 set -eo pipefail
 
@@ -50,13 +55,8 @@ if [ "${USE_RUN_NUMBER}" == "true" ]; then
   UPLOAD_FULL_PATH+="run-${RUN_ID:?}/"
 fi
 
-mkpath_flag=()
-
-if rsync --help | grep mkpath >/dev/null; then
-  mkpath_flag=(--mkpath)
-else
-  retry ssh "${SERVER_USERNAME}@${SERVER_ADDRESS}" "mkdir -p ${UPLOAD_FULL_PATH}"
-fi
+# run on the server before rsync, in the same ssh connection
+printf -v rsync_path 'mkdir -p %q && rsync' "$UPLOAD_FULL_PATH"
 
 # the pattern is a glob and is meant to be expanded here
 # shellcheck disable=SC2206
@@ -65,7 +65,7 @@ sources=(${UPLOAD_FROM%/}/${UPLOAD_PATTERN})
 echo "::group::Uploading files..."
 retry rsync \
   -avzhH \
-  --ignore-missing-args "${mkpath_flag[@]}" \
+  --ignore-missing-args --rsync-path="$rsync_path" \
   "${sources[@]}" \
   "${SERVER_USERNAME}@${SERVER_ADDRESS}:${UPLOAD_FULL_PATH}"
 echo "::endgroup::"
